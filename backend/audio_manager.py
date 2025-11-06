@@ -1,116 +1,212 @@
 import sounddevice as sd
 import numpy as np
 import time
-from collections import deque
 import threading
+from collections import deque
 import speech_recognition as sr
-import winsound
+import soundfile as sf
+import torch
+import torchaudio
 
-# Configurações de áudio
-sample_rate = 44100       # Taxa de amostragem em hz // esse valor e o padrao de qualidade de audio, quanto maior, melhor e o som, porem mais pesado fica a reproducao
-frame_duration = 0.1      # Duração de cada bloco de áudio (s)
-frame_size = int(sample_rate * frame_duration)  # Tamanho do bloco // essa conta precisa ser feita pro sistema entender qual o tamanho dos blocos que ele deve manipular
-ganho = 2.0 #Amplificador, colocar valores entre 1.0 e 3.0 para testar o melhor
-memoria_segundos = 5 #Quanto tempo o audio fica guardado caso a pessoa queira que a frase seja repetida
-buffer_maximo = int(memoria_segundos / frame_duration) #Se nosso frame duration seria 0.1s, em 1 segundo teriamos 10 blocos, o buffer_maximo esta sendo representado em blocos de audio
-memoria_audio = deque(maxlen=buffer_maximo) #Lista circular para guardar os blocos de som, quando atinge o buffer_maximo os blocos mais antigos sao descartados
-executando = True
-stream = None
-palavra_chave = ["pietro"] 
+# configurações gerais
+sample_rate = 16000  # taxa de amostragem do áudio
+frame_duration = 0.02  # duração de cada bloco de áudio em segundos
+frame_size = int(sample_rate * frame_duration)  # tamanho do bloco em amostras
+ganho = 5  # amplificação do áudio
+balanco = 0.0  # -1.0 é só no fone esquerdo, 0.0 neutro, 1.0 é só no direito
+memoria_segundos = 5  # quanto tempo de áudio fica guardado
+reconhecimento_segundos = 2  # quanto tempo de áudio é usado pra transcrição
+buffer_maximo = int(memoria_segundos / frame_duration)  # quantos blocos cabem na memória
+buffer_reconhecimento = int(reconhecimento_segundos / frame_duration)  # blocos usados pra reconhecer
+memoria_audio = deque(maxlen=buffer_maximo)  # fila que guarda os blocos de áudio
+executando = False  # se tá gravando ou não
+palavra_chave = ["pietro"]  # palavra que dispara o alerta
+stream = None  # stream de áudio
+stream_lock = threading.Lock()  # trava pra mexer no stream com segurança
+threads_iniciados = False  # pra não iniciar as threads mais de uma vez
 
-# Função de callback: chamada a cada bloco de áudio
+# detector de voz silero
+torch.set_num_threads(1)
+model, utils = torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)
+(get_speech_timestamps, _, _, _, _) = utils
+falando = False  # se o usuário está falando
+silencio_contador = 0
+silencio_limite = int(0.3 / frame_duration)  # 300ms de silêncio
+buffer_vad = deque(maxlen=int(0.5 / frame_duration))  # 0.5s de áudio para VAD
+
+# função que aplica o ganho e o balanço nos canais
+def aplicar_ganho_balanco(indata):
+    # se o áudio vier mono, duplica pra virar estéreo
+    if indata.shape[1] == 1:
+        indata = np.repeat(indata, 2, axis=1)
+    # aplica o ganho e limita pra não estourar
+    audio = np.clip(indata * ganho, -1.0, 1.0)
+    # calcula quanto vai pro canal esquerdo e direito com base no balanço
+    esquerda = 1.0 - max(0.0, balanco)
+    direita = 1.0 - max(0.0, -balanco)
+    # aplica o balanço nos canais
+    audio[:, 0] *= esquerda
+    audio[:, 1] *= direita
+    return audio
+
+# função que roda toda vez que chega um bloco de áudio
 def audio_callback(indata, outdata, frames, time_info, status):
-    global memoria_audio
-    if status:
-        print("Erro:", status)
+    global falando, silencio_contador
+    # se não tiver gravando, manda silêncio
+    if not executando:
+        outdata[:] = np.zeros_like(outdata)
+        return
+    # garante que o áudio de entrada tá em estéreo
+    indata_stereo = np.repeat(indata, 2, axis=1) if indata.shape[1] == 1 else indata
+    # aplica o ganho e balanço
+    audio_processado = aplicar_ganho_balanco(indata_stereo)
+    # guarda esse pedaço na memória
+    memoria_audio.append(audio_processado.copy())
 
-    audio_amplificado = indata * ganho #indata = o som que entra, multiplicado pelo ganho
-    audio_amplificado = np.clip(audio_amplificado, -1.0, 1.0) #mantem os valores do audio no range para nao causar distorcao e estabilizar os volumes de audio
+    # acumula áudio para VAD
+    audio_mono = np.mean(indata, axis=1)
+    buffer_vad.append(audio_mono)
 
-    memoria_audio.append(audio_amplificado.copy()) #Sobresceve o blocos de audio com append, adicionando novos blocos no fim da lista
+    # só analisa se o buffer estiver cheio
+    if len(buffer_vad) == buffer_vad.maxlen:
+        audio_concat = np.concatenate(list(buffer_vad))
+        audio_tensor = torch.tensor(audio_concat, dtype=torch.float32)
+        speech = get_speech_timestamps(audio_tensor, model, sampling_rate=sample_rate)
+        if speech:
+            falando = True
+            silencio_contador = 0
+        else:
+            silencio_contador += 1
+            if silencio_contador > silencio_limite:
+                falando = False
 
-    # print("Ganho:", ganho)
-    # print("indata:", indata[:10])
-    # print("amplificado:", audio_amplificado[:10])
+    # se estiver falando, muta o áudio de saída
+    if falando:
+        outdata[:] = np.zeros_like(outdata)
+    else:
+        outdata[:] = audio_processado
 
-    outdata[:] = audio_amplificado  # pega o audio ja amplificado e joga no outdata (som que esta entrando no fone)
-
-#Comandos para reproduzir a memoria
-def escutar_comandos():
-    global executando
-    while executando:
-        comando = input("digite 'r' para repetir ou 'q' para sair: ").strip().lower()
-        if comando == 'r':
-            print("reproduzindo memoria...")
-            repetir_memoria()
-        elif comando == 'q':
-            print("encerrando...")
-            executando = False
-     
-#Reproducao dos blocos de som
+# função que repete o que tá na memória
 def repetir_memoria():
     global stream
-    if not memoria_audio: #Verifica se a memoria esta vazia retornando um aviso
-        print("nenhuma memoria de audio armazenada.")
+    # se não tiver nada gravado, avisa
+    if not memoria_audio:
+        print("nenhuma memória de áudio armazenada.")
         return
-    
-    som = np.concatenate(list(memoria_audio))  #transforma o deque em lista e concatena os blocos // sd.play so funciona com um unico array continuo, por isso foi necessario formar uma lista e concatenar
-   
-    stream.stop()
-    sd.play(som, samplerate=sample_rate) #reproduz o audio na mesma taxa de amostragem gravada
-    sd.wait() #espera a reproducao completa do som antes de continuar com o codigo
-    stream.start()
-# Inicia o stream de áudio // as variaveis que a api precisa pra executar o audio *channels=1 reproducao em mono, como ele reproduzira falas nao precisa ser estereo, logo, mantem o programa leve
-
-def alerta_nome_detectado(): #beep de alerta para palavra chave detectada
-    print("Palavra chave detectada. tocando alarme sonoro")
-    winsound.Beep(1000, 500)  # frequência 1000 hz, duração 500 ms
-
-def detectar_nome(): #deteccao de nome, so tenta transcrever se memoria estiver cheia
-    reconhecedor = sr.Recognizer()
-    while executando:
-        if len(memoria_audio) < buffer_maximo:
-            time.sleep(1)
-            continue
-
-        som = np.concatenate(list(memoria_audio))
-        som_int16 = np.int16(som * 32767)
-
+    # junta tudo que tá na memória
+    som = np.concatenate(list(memoria_audio))
+    # converte pra int16 pra poder tocar
+    som_int16 = np.int16(som * 32767)
+    try:
+        # para o stream pra não dar conflito
+        with stream_lock:
+            stream.stop()
+        # toca o som
+        sd.play(som_int16, samplerate=sample_rate)
+        sd.wait()
+        # volta com o stream depois de tocar
+        with stream_lock:
+            stream.start()
+    except Exception as e:
+        print("erro ao reproduzir:", e)
         try:
-            audio_data = sr.AudioData(som_int16.tobytes(), sample_rate, 2)
-            texto = reconhecedor.recognize_google(audio_data, language="pt-BR")
+            with stream_lock:
+                stream.start()
+        except:
+            pass
 
-            print(f"Transcrição: {texto}")
-            if any(nome in texto.lower() for nome in palavra_chave):
-                    alerta_nome_detectado()
+# função que toca o alerta quando detecta a palavra-chave
+def alerta_nome_detectado():
+    print("palavra-chave detectada!")
+    try:
+        # carrega o som do alerta
+        data, fs = sf.read("new-notification-08-352461.wav", dtype='int16')
+        # toca o som
+        sd.play(data, samplerate=fs)
+    except Exception as e:
+        print("erro ao tocar alerta:", e)
+
+# função que escuta o áudio e tenta reconhecer a fala
+def detectar_nome():
+    reconhecedor = sr.Recognizer()
+    while True:
+        # só tenta reconhecer se tiver gravando e com áudio suficiente
+        if not executando or len(memoria_audio) < buffer_reconhecimento:
+            time.sleep(0.2)
+            continue
+        # pega os últimos blocos da memória
+        trecho = list(memoria_audio)[-buffer_reconhecimento:]
+        som = np.concatenate(trecho)
+        # transforma em mono pra mandar pro reconhecedor
+        som_mono = np.mean(som, axis=1)
+        som_int16 = np.int16(som_mono * 32767)
+        try:
+            # cria objeto de áudio pro recognizer
+            audio_data = sr.AudioData(som_int16.tobytes(), sample_rate, 2)
+            # tenta reconhecer o que foi falado
+            texto = reconhecedor.recognize_google(audio_data, language="pt-BR")
+            print(f"transcrição: {texto}")
+            # se for exatamente a palavra-chave, dispara o alerta
+            if texto.strip().lower() in palavra_chave:
+                alerta_nome_detectado()
         except sr.UnknownValueError:
             pass
         except sr.RequestError as e:
-            print("Erro no reconhecimento:", e)
+            print("erro no reconhecimento:", e)
+        time.sleep(0.1)
 
-        time.sleep(2)
-try:
-    stream = sd.Stream(
-        samplerate=sample_rate,
-        blocksize=frame_size,
-        dtype='float32',
-        channels=1,             # Mono (1 canal)
-        callback=audio_callback
-    )
-    stream.start()
+#comandos do terminal // somente backend
+def escutar_comandos():
+    global executando, balanco
+    while True:
+        try:
+            comando = input("digite 'p' para play, 'q' para pause, 'r' para repetir, 'b' para ajustar balanço: ").strip().lower()
+            if comando == 'p':
+                executando = True
+                print("gravação iniciada.")
+            elif comando == 'q':
+                executando = False
+                print("gravação pausada.")
+            elif comando == 'r':
+                repetir_memoria()
+            elif comando == 'b':
+                try:
+                    valor = float(input("novo balanço (-1.0 esquerda, 0.0 neutro, 1.0 direita): "))
+                    balanco = max(-1.0, min(1.0, valor))
+                    print(f"balanço ajustado para {balanco}")
+                except:
+                    print("valor inválido.")
+        except EOFError:
+            break
 
-    print("Clarivox ativo")
-    threading.Thread(target=escutar_comandos, daemon=True).start()
-    threading.Thread(target=detectar_nome, daemon=True).start()
+# função principal que inicia tudo
+def iniciar_clarivox():
+    global stream, threads_iniciados
+    try:
+        # cria o stream com entrada mono e saída estéreo
+        stream = sd.Stream(
+            samplerate=sample_rate,
+            blocksize=frame_size,
+            dtype='float32',
+            channels=(1, 2),  # entrada mono, saída estéreo
+            callback=audio_callback,
+            latency='low'
+        )
+        stream.start()
+        print("clarivox iniciado.")
+        # inicia as threads só uma vez
+        if not threads_iniciados:
+            threading.Thread(target=escutar_comandos, daemon=True).start()
+            threading.Thread(target=detectar_nome, daemon=True).start()
+            threads_iniciados = True
+        # loop principal
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nencerrado pelo usuário.")
+    except Exception as e:
+        print("erro ao iniciar:", e)
 
-    print("Capturando...\nPressione Ctrl+C para parar.")
-    while executando:
-        time.sleep(1)  # basicamente um loop, enquanto for true conta 1 segundo, e enquanto ele conta, esta sendo true
-
-    stream.stop()
-    stream.close()
-
-except KeyboardInterrupt:
-    print("\n Encerrado pelo usuário.")
-except Exception as e:
-    print("Erro ao iniciar o stream:", e)
+# ponto de entrada
+if __name__ == "__main__":
+    iniciar_clarivox()
