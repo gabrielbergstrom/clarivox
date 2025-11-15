@@ -2,46 +2,75 @@ O Clarivox é um aplicativo voltado para pessoas com deficiência auditiva. Ele 
 
 O sistema utiliza bibliotecas de áudio e machine learning embarcado para detectar atividade de voz, processar o som e disponibilizar controles acessíveis como play, pausa, repetição de fala e ajuste de balanço entre canais.
 
-Funcionalidades:
-Captura e reprodução de áudio em tempo real
-Detecção de fala com Silero VAD
-Interface acessível com botões de controle (play, pause, repetir, balanço)
-Estrutura modular para expansão futura (reconhecimento de fala, perfis auditivos personalizados)
-Compatibilidade com fones de ouvido comuns
+__Funcionalidades__:
+-
+- Captura e reprodução de áudio em tempo real
 
-Tecnologias utilizadas
-Python
-SoundDevice e SoundFile para manipulação de áudio
-NumPy para processamento de dados
-Silero VAD para detecção de atividade de voz
-Frontend com Kivy/HTML5 + CSS + JS (em produção)
-SQLite/PostgreSQL para gerenciamento de dados
+- Detecção de fala com Silero VAD
 
-Instalação
-Clone o repositório:
-bash
-git clone https://github.com/seuusuario/clarivox.git
-cd clarivox
+- Interface acessível com botões de controle (play, pause, repetir, balanço)
 
-Crie o ambiente virtual e instale as dependências:
-bash
-python -m venv venv
-source venv/bin/activate   # Linux/Mac
-venv\Scripts\activate      # Windows
-pip install -r requirements.txt
+- Estrutura modular para expansão futura (reconhecimento de fala, perfis auditivos personalizados)
 
-Como usar
+- Compatibilidade com fones de ouvido comuns
+
+__Tecnologias utilizadas__
+-
+- Python
+
+- SoundDevice e SoundFile para manipulação de áudio
+
+- NumPy para processamento de dados
+
+- Silero VAD para detecção de atividade de voz
+
+- Frontend com Kivy/HTML5 + CSS + JS (em produção)
+
+- SQLite/PostgreSQL para gerenciamento de dados
+
+__Instalação__
+-
+__Clone o repositório:__
+
+-bash
+
+-git clone https://github.com/seuusuario/clarivox.git
+
+-cd clarivox
+
+__Crie o ambiente virtual e instale as dependências__:
+
+-bash
+
+-python -m venv venv
+
+-source venv/bin/activate   # Linux/Mac
+
+-venv\Scripts\activate      # Windows
+
+-pip install -r requirements.txt
+
+
+__Como usar__
+-
 Execute o aplicativo:
 
 bash
+
 python main.py
 
-Conecte os fones de ouvido e utilize os controles do console para ajustar a experiência auditiva.
+_Conecte os fones de ouvido e utilize os controles do console para ajustar a experiência auditiva_.
 
-Roadmap
+__Roadmap__
+-
 [x] Captura e reprodução de áudio
+
 [x] Detecção de fala com IA
+
 [ ] Reconhecimento de fala integrado
+
 [ ] Perfis auditivos personalizados
+
 [ ] Exportação de relatórios de uso
+
 [ ] Interface do APP
