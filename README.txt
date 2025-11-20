@@ -34,7 +34,7 @@ __Clone o repositório:__
 
 -bash
 
--git clone https://github.com/seuusuario/clarivox.git
+-git clone https://github.com/gabrielbergstrom/clarivox.git
 
 -cd clarivox
 
